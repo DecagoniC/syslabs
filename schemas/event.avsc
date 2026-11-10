@@ -2,7 +2,7 @@
   "type": "record",
   "name": "SensorEvent",
   "namespace": "stand.sensors",
-  "doc": "Событие sensor.community: один замер датчика качества воздуха. Версия 1 не хранит measurement_id; поле добавлено в версии 2 со значением по умолчанию null.",
+  "doc": "Событие sensor.community: один замер датчика качества воздуха. Версия 2 добавляет measurement_id со значением по умолчанию null; версия 1 его не хранила.",
   "fields": [
     {
       "name": "event_key",
@@ -29,6 +29,15 @@
       "name": "source",
       "type": "string",
       "doc": "Ось источника данных; для варианта 27 значение sensors."
+    },
+    {
+      "name": "measurement_id",
+      "type": [
+        "null",
+        "long"
+      ],
+      "default": null,
+      "doc": "Идентификатор замера в живом API; в архивных CSV отсутствует. Добавлен в версии 2 схемы."
     },
     {
       "name": "sensor_id",
