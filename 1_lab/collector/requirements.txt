@@ -1,0 +1,3 @@
+# Зависимости программы сборщика.
+# Оболочка стенда ставит их при сборке образа: docker compose build collector.
+prometheus_client==0.21.1
