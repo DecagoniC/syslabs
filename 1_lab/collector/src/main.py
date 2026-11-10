@@ -8,6 +8,7 @@ import codecs
 import csv
 import gzip
 import io
+import itertools
 import json
 import os
 import re
@@ -32,6 +33,7 @@ REQUEST_STATUSES = frozenset({"success", "http_error", "network_error", "parse_e
 ERROR_KINDS = frozenset({"http", "network", "parse"})
 _JSON_SEPARATORS = (",", ":")
 CSV_META = frozenset({"sensor_id", "sensor_type", "location", "lat", "lon", "timestamp"})
+COUNT_KEYS = ("got", "kept", "new", "dup", "conflict", "bad")
 _archive_slugs_cache: dict[str, tuple[str, ...]] = {}
 
 _stop = threading.Event()
@@ -39,6 +41,9 @@ _metrics: "Metrics | None" = None
 _metrics_httpd = None
 _metrics_thread = None
 _metrics_server_started = False
+_limit_root: Path | None = None
+_limit_total: int | None = None
+_limit_pending = 0
 
 
 @dataclass
@@ -257,19 +262,12 @@ def install_signals() -> None:
 
 def sleep_for(seconds: float) -> bool:
     """Ждёт seconds. False — пришёл сигнал остановки."""
-    end = time.monotonic() + seconds
-    while not _stop.is_set():
-        remain = end - time.monotonic()
-        if remain <= 0:
-            return True
-        if _stop.wait(min(remain, 1)):
-            return False
-    return False
+    return not _stop.wait(seconds)
 
 
 def format_time(moment: datetime) -> str:
     utc = moment.astimezone(timezone.utc)
-    return utc.strftime("%Y-%m-%dT%H:%M:%S.") + f"{utc.microsecond // 1000:03d}Z"
+    return utc.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def parse_time(value: object) -> datetime | None:
@@ -297,6 +295,18 @@ def as_int(value: object) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def as_dict(value: object) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def country_of(location: dict) -> str:
+    return str(location.get("country") or "").upper()
+
+
+def zero_counts() -> dict[str, int]:
+    return dict.fromkeys(COUNT_KEYS, 0)
 
 
 def fingerprint(values: dict[str, str]) -> str:
@@ -347,15 +357,14 @@ def event_from_api(
     source: str,
     received_at: datetime,
     countries: frozenset[str],
+    received_at_text: str | None = None,
 ) -> dict[str, object] | bool | None:
     # False — битая запись (нет sensor_id/timestamp); None — отброшена фильтром страны.
-    location_raw = item.get("location")
-    location = location_raw if isinstance(location_raw, dict) else {}
-    country = str(location.get("country") or "").upper()
+    location = as_dict(item.get("location"))
+    country = country_of(location)
     if countries and country not in countries:
         return None
-    sensor_raw = item.get("sensor")
-    sensor = sensor_raw if isinstance(sensor_raw, dict) else {}
+    sensor = as_dict(item.get("sensor"))
     sensor_id = as_int(sensor.get("id"))
     event_time = parse_time(item.get("timestamp"))
     if sensor_id is None or event_time is None:
@@ -396,6 +405,7 @@ def event_from_api(
         indoor=as_int(location.get("indoor")),
         measurement_id=as_int(item.get("id")),
         values=values,
+        received_at_text=received_at_text,
     )
 
 
@@ -453,8 +463,13 @@ class PartWriter:
         self.lines += 1
 
     def commit(self) -> Path:
+        global _limit_pending
         self._gz.close()
         os.replace(self.partial, self.final)
+        try:
+            _limit_pending += self.final.stat().st_size
+        except OSError:
+            pass
         return self.final
 
     def abort(self) -> None:
@@ -463,6 +478,19 @@ class PartWriter:
         except Exception:
             pass
         self.partial.unlink(missing_ok=True)
+
+
+def abort_writers(writers: dict[str, PartWriter]) -> None:
+    for writer in writers.values():
+        writer.abort()
+
+
+def commit_part(writer: PartWriter, cfg: Config) -> Path:
+    path = writer.commit()
+    if _metrics is not None:
+        _metrics.add_events(writer.lines)
+    log("info", "closed", lines=writer.lines, file=str(path.relative_to(cfg.raw_dir)))
+    return path
 
 
 def atomic_write(path: Path, text: str) -> None:
@@ -489,18 +517,23 @@ def drop_partials(root: Path) -> None:
         path.unlink(missing_ok=True)
 
 
-def partition_time(path: Path) -> datetime | None:
+def partition_parts(path: Path) -> tuple[str | None, str | None]:
     day = None
-    hour = "00"
+    hour = None
     for part in path.parts:
         if part.startswith("dt="):
             day = part[3:]
         elif part.startswith("hour="):
             hour = part[5:]
+    return day, hour
+
+
+def partition_time(path: Path) -> datetime | None:
+    day, hour = partition_parts(path)
     if day is None:
         return None
     try:
-        return datetime.fromisoformat(f"{day}T{hour}:00:00+00:00")
+        return datetime.fromisoformat(f"{day}T{hour or '00'}:00:00+00:00")
     except ValueError:
         return None
 
@@ -523,8 +556,7 @@ def scan_recent_keys(stream_dir: Path, now: datetime, window: int) -> dict[str, 
                     key = event.get("event_key")
                     if not isinstance(key, str):
                         continue
-                    raw_values = event.get("values")
-                    values = raw_values if isinstance(raw_values, dict) else {}
+                    values = as_dict(event.get("values"))
                     found[key] = (opened, fingerprint(values))
         except (OSError, json.JSONDecodeError, EOFError, gzip.BadGzipFile) as exc:
             log("warn", "scan", file=path.name, error=str(exc))
@@ -543,17 +575,17 @@ def closed_files(raw_dir: Path) -> list[Path]:
 
 
 def file_sort_key(path: Path) -> tuple[str, str, str]:
-    day = "9999-99-99"
-    hour = ""
-    for part in path.parts:
-        if part.startswith("dt="):
-            day = part[3:]
-        elif part.startswith("hour="):
-            hour = part[5:]
-    return (day, hour, path.name)
+    day, hour = partition_parts(path)
+    return (day or "9999-99-99", hour or "", path.name)
 
 
 def enforce_limit(raw_dir: Path, limit_bytes: int) -> None:
+    global _limit_root, _limit_total, _limit_pending
+    if _limit_root == raw_dir and _limit_total is not None:
+        _limit_total += _limit_pending
+        _limit_pending = 0
+        if _limit_total <= limit_bytes:
+            return
     files = closed_files(raw_dir)
     total = 0
     sizes: list[int] = []
@@ -564,6 +596,9 @@ def enforce_limit(raw_dir: Path, limit_bytes: int) -> None:
             size = 0
         sizes.append(size)
         total += size
+    _limit_root = raw_dir
+    _limit_total = total
+    _limit_pending = 0
     removed = 0
     index = 0
     while total > limit_bytes and index < len(files) - 1:
@@ -579,21 +614,26 @@ def enforce_limit(raw_dir: Path, limit_bytes: int) -> None:
         total -= size
         removed += 1
         index += 1
+    _limit_total = total
     if removed:
         log("info", "rotated", files=removed)
 
 
 def iter_json_array(chunks):
     """Читает JSON-массив объектами, не собирая ответ целиком."""
-    decoder = codecs.getincrementaldecoder("utf-8")()
+    decoder = codecs.getincrementaldecoder("utf-8-sig")()
     parser = json.JSONDecoder()
     buf = ""
+    pos = 0
     eof = False
 
     def pull() -> bool:
-        nonlocal buf, eof
+        nonlocal buf, pos, eof
         if eof:
             return False
+        if pos:
+            buf = buf[pos:]
+            pos = 0
         chunk = next(chunks, None)
         if not chunk:
             buf += decoder.decode(b"", final=True)
@@ -610,21 +650,22 @@ def iter_json_array(chunks):
             return
     if buf[0] != "[":
         raise ValueError("ожидался JSON-массив")
-    buf = buf[1:]
+    pos = 1
     while True:
-        buf = buf.lstrip()
-        if not buf:
+        while pos < len(buf) and buf[pos].isspace():
+            pos += 1
+        if pos >= len(buf):
             if not pull():
                 return
             continue
-        if buf[0] == "]":
+        if buf[pos] == "]":
             return
-        if buf[0] == ",":
-            buf = buf[1:]
+        if buf[pos] == ",":
+            pos += 1
             continue
         while True:
             try:
-                obj, index = parser.raw_decode(buf)
+                obj, end = parser.raw_decode(buf, pos)
             except json.JSONDecodeError:
                 if not pull():
                     raise
@@ -632,7 +673,7 @@ def iter_json_array(chunks):
             if not isinstance(obj, dict):
                 raise ValueError("элемент потока не объект")
             yield obj
-            buf = buf[index:]
+            pos = end
             break
 
 
@@ -668,6 +709,7 @@ def open_once(cfg: Config, url: str):
 
 
 def call_with_retries(cfg: Config, url: str, action):
+    metrics = _metrics
     pause = 1
     for attempt in range(1, cfg.retries + 1):
         if _stop.is_set():
@@ -677,27 +719,27 @@ def call_with_retries(cfg: Config, url: str, action):
             with open_once(cfg, url) as response:
                 result = action(response)
             elapsed = time.monotonic() - started
-            if _metrics is not None:
-                _metrics.observe_request(elapsed)
-                _metrics.add_request("success")
-                _metrics.mark_success(datetime.now(timezone.utc))
+            if metrics is not None:
+                metrics.observe_request(elapsed)
+                metrics.add_request("success")
+                metrics.mark_success(datetime.now(timezone.utc))
             return result
         except Exception as exc:
             elapsed = time.monotonic() - started
             status = exc.code if isinstance(exc, urllib.error.HTTPError) else None
-            req_status, err_kind = classify_failure(exc)
             if isinstance(exc, urllib.error.HTTPError):
                 exc.close()
-            if _metrics is not None:
-                _metrics.observe_request(elapsed)
+            if metrics is not None:
+                metrics.observe_request(elapsed)
             if status == 404:
-                if _metrics is not None:
-                    _metrics.add_request("http_error")
+                if metrics is not None:
+                    metrics.add_request("http_error")
                 return 404
+            req_status, err_kind = classify_failure(exc)
+            if metrics is not None:
+                metrics.add_request(req_status)
+                metrics.add_error(err_kind)
             if not retryable(exc) or attempt == cfg.retries:
-                if _metrics is not None:
-                    _metrics.add_request(req_status)
-                    _metrics.add_error(err_kind)
                 log(
                     "warn" if status else "error",
                     "http",
@@ -706,9 +748,6 @@ def call_with_retries(cfg: Config, url: str, action):
                     error=str(exc),
                 )
                 raise
-            if _metrics is not None:
-                _metrics.add_request(req_status)
-                _metrics.add_error(err_kind)
             log("warn", "http", status=status or 0, pause=pause, url=url)
             if not sleep_for(pause):
                 return None
@@ -725,8 +764,6 @@ def start_metrics(cfg: Config, registry: CollectorRegistry | None = None) -> Met
         return _metrics
     if _metrics is None:
         _metrics = Metrics(cfg.mode, registry=registry)
-    if _metrics_server_started:
-        return _metrics
     try:
         _metrics_httpd, _metrics_thread = start_http_server(
             cfg.metrics_port,
@@ -771,9 +808,7 @@ def sample_global(cfg: Config) -> None:
         kept = 0
         for item in iter_json_array(byte_chunks(response)):
             got += 1
-            location_raw = item.get("location")
-            location = location_raw if isinstance(location_raw, dict) else {}
-            country = str(location.get("country") or "").upper()
+            country = country_of(as_dict(item.get("location")))
             if not cfg.countries or country in cfg.countries:
                 kept += 1
         return got, kept
@@ -806,15 +841,15 @@ def prune_seen(seen: dict[str, tuple[datetime, str]], now: datetime, window: int
 
 
 def poll_url(cfg: Config, url: str, received_at: datetime, seen, directory: Path, name: str) -> dict[str, int]:
-    empty = {"got": 0, "kept": 0, "new": 0, "dup": 0, "conflict": 0, "bad": 0}
+    received_text = format_time(received_at)
 
     def read(response) -> tuple[dict[str, int], list[tuple[dict[str, object], str]]]:
-        counts = dict(empty)
+        counts = zero_counts()
         fresh: list[tuple[dict[str, object], str]] = []
         local: dict[str, str] = {}
         for item in iter_json_array(byte_chunks(response)):
             counts["got"] += 1
-            event = event_from_api(item, cfg.source, received_at, cfg.countries)
+            event = event_from_api(item, cfg.source, received_at, cfg.countries, received_text)
             if event is None:
                 continue
             counts["kept"] += 1
@@ -822,8 +857,7 @@ def poll_url(cfg: Config, url: str, received_at: datetime, seen, directory: Path
                 counts["bad"] += 1
                 continue
             key = str(event["event_key"])
-            raw_values = event["values"]
-            values = raw_values if isinstance(raw_values, dict) else {}
+            values = as_dict(event["values"])
             digest = fingerprint(values)
             previous = seen.get(key)
             if previous is not None or key in local:
@@ -841,12 +875,12 @@ def poll_url(cfg: Config, url: str, received_at: datetime, seen, directory: Path
         result = call_with_retries(cfg, url, read)
     except Exception as exc:
         log("error", "poll", url=url, error=str(exc))
-        return dict(empty)
+        return zero_counts()
     if result == 404:
         log("warn", "http", status=404, url=url)
-        return dict(empty)
+        return zero_counts()
     if not isinstance(result, tuple):
-        return dict(empty)
+        return zero_counts()
     counts, fresh = result
     if _metrics is not None and counts["got"]:
         _metrics.add_records(counts["got"])
@@ -856,7 +890,7 @@ def poll_url(cfg: Config, url: str, received_at: datetime, seen, directory: Path
     try:
         for event, _digest in fresh:
             writer.write(event)
-        path = writer.commit()
+        commit_part(writer, cfg)
     except Exception as exc:
         writer.abort()
         if _metrics is not None:
@@ -864,9 +898,6 @@ def poll_url(cfg: Config, url: str, received_at: datetime, seen, directory: Path
         log("error", "write", file=name, error=str(exc))
         raise
     remember(seen, [(str(event["event_key"]), digest) for event, digest in fresh], received_at)
-    if _metrics is not None:
-        _metrics.add_events(writer.lines)
-    log("info", "closed", lines=writer.lines, file=str(path.relative_to(cfg.raw_dir)))
     return counts
 
 
@@ -900,7 +931,7 @@ def record_loop(cfg: Config) -> None:
         hour = now.strftime("%H")
         directory = cfg.out_dir / f"dt={day}" / f"hour={hour}"
         stamp = now.strftime("%Y%m%dT%H%M%SZ")
-        totals = {"got": 0, "kept": 0, "new": 0, "dup": 0, "conflict": 0, "bad": 0}
+        totals = zero_counts()
         targets = [(country, cfg.country_url.format(country=quote(country))) for country in sorted(cfg.countries)]
         if not targets:
             targets = [("all", cfg.global_url)]
@@ -958,32 +989,29 @@ def event_from_csv(
 
 def discover_sensors(cfg: Config) -> dict[str, dict[str, str]]:
     found: dict[str, dict[str, str]] = {}
+    received_at = datetime.now(timezone.utc)
 
-    def consume(country: str):
-        def read(response) -> None:
-            for item in iter_json_array(byte_chunks(response)):
-                event = event_from_api(item, cfg.source, datetime.now(timezone.utc), cfg.countries)
-                if not isinstance(event, dict) or not event.get("sensor_type"):
-                    continue
-                sensor_id = str(event["sensor_id"])
-                indoor = event.get("indoor")
-                found.setdefault(
-                    sensor_id,
-                    {
-                        "sensor_type": str(event["sensor_type"]),
-                        "country": str(event.get("country") or ""),
-                        "indoor": "1" if indoor == 1 else "0",
-                    },
-                )
-
-        return read
+    def read(response) -> None:
+        for item in iter_json_array(byte_chunks(response)):
+            event = event_from_api(item, cfg.source, received_at, cfg.countries)
+            if not isinstance(event, dict) or not event.get("sensor_type"):
+                continue
+            sensor_id = str(event["sensor_id"])
+            if sensor_id in found:
+                continue
+            indoor = event.get("indoor")
+            found[sensor_id] = {
+                "sensor_type": str(event["sensor_type"]),
+                "country": str(event.get("country") or ""),
+                "indoor": "1" if indoor == 1 else "0",
+            }
 
     for country in sorted(cfg.countries):
         if _stop.is_set():
             break
         url = cfg.country_url.format(country=quote(country))
         try:
-            call_with_retries(cfg, url, consume(country))
+            call_with_retries(cfg, url, read)
         except Exception as exc:
             log("error", "discover", country=country, error=str(exc))
     return found
@@ -1003,24 +1031,15 @@ def load_sensor_file(
     writers: dict[str, PartWriter] = {}
     seen: set[str] = set()
 
-    def finish(status: str) -> str:
-        if status != "ok":
-            for writer in writers.values():
-                writer.abort()
-            return status
+    def finish(outcome: str) -> str:
+        if outcome != "ok":
+            abort_writers(writers)
+            return outcome
         for writer in writers.values():
             if writer.lines == 0:
                 writer.abort()
                 continue
-            path = writer.commit()
-            if _metrics is not None:
-                _metrics.add_events(writer.lines)
-            log(
-                "info",
-                "closed",
-                lines=writer.lines,
-                file=str(path.relative_to(cfg.raw_dir)),
-            )
+            commit_part(writer, cfg)
         return "ok"
 
     suffixes = ["_indoor", ""] if indoor == "1" else ["", "_indoor"]
@@ -1032,24 +1051,22 @@ def load_sensor_file(
                 sensor_id=sensor_id,
                 suffix=suffix,
             )
-            holder: dict[str, object] = {"status": None}
+            status: str | None = None
 
-            def read(response, slug=slug) -> bool:
-                nonlocal writers, seen
-                for previous in writers.values():
-                    previous.abort()
+            def read(response) -> bool:
+                nonlocal writers, seen, status
+                abort_writers(writers)
                 writers = {}
                 seen = set()
                 processed = 0
-                text = io.TextIOWrapper(response, encoding="utf-8", newline="")
+                text = io.TextIOWrapper(response, encoding="utf-8-sig", newline="")
                 try:
                     header = text.readline()
                     if not header:
-                        holder["status"] = "miss"
+                        status = "miss"
                         return True
-                    header = header.lstrip("\ufeff")
                     delimiter = ";" if header.count(";") >= header.count(",") else ","
-                    parsed = csv.DictReader(iter_header(header, text), delimiter=delimiter)
+                    parsed = csv.DictReader(itertools.chain([header], text), delimiter=delimiter)
                     for row in parsed:
                         processed += 1
                         event = event_from_csv(
@@ -1074,8 +1091,7 @@ def load_sensor_file(
                         writer.write(event)
                     if _metrics is not None and processed:
                         _metrics.add_records(processed)
-                    holder["status"] = "ok"
-                    holder["slug"] = slug
+                    status = "ok"
                     return True
                 finally:
                     text.detach()
@@ -1083,29 +1099,21 @@ def load_sensor_file(
             try:
                 result = call_with_retries(cfg, url, read)
             except Exception as exc:
-                for writer in writers.values():
-                    writer.abort()
+                abort_writers(writers)
                 writers.clear()
                 log("error", "history", sensor_id=sensor_id, date=day.isoformat(), error=str(exc))
                 return "stop"
             if result == 404:
                 continue
             if result is None:
-                for writer in writers.values():
-                    writer.abort()
+                abort_writers(writers)
                 return "stop"
-            outcome = finish(str(holder.get("status") or "miss"))
+            outcome = finish(status or "miss")
             if outcome == "ok" and _metrics is not None:
                 _metrics.add_backfill_completed()
             return outcome
     log("info", "miss", sensor_id=sensor_id, date=day.isoformat(), sensor_type=sensor_type)
     return "miss"
-
-
-def iter_header(header: str, rest):
-    yield header
-    for line in rest:
-        yield line
 
 
 def backfill(cfg: Config) -> None:
@@ -1188,8 +1196,6 @@ def main() -> None:
 if __name__ == "__main__":
     try:
         main()
-    except SystemExit:
-        raise
     except Exception as exc:
         if _metrics is not None:
             _metrics.set_up(0)
