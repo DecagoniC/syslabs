@@ -1,0 +1,119 @@
+{
+  "type": "record",
+  "name": "SensorEvent",
+  "namespace": "stand.sensors",
+  "doc": "Событие sensor.community: один замер датчика качества воздуха. Версия 1 не хранит measurement_id; поле добавлено в версии 2 со значением по умолчанию null.",
+  "fields": [
+    {
+      "name": "event_key",
+      "type": "string",
+      "doc": "Ключ события: sensor_id и event_time через вертикальную черту, время в UTC."
+    },
+    {
+      "name": "event_time",
+      "type": {
+        "type": "long",
+        "logicalType": "timestamp-millis"
+      },
+      "doc": "Время замера в UTC, миллисекунды от эпохи. Обязательное поле."
+    },
+    {
+      "name": "received_at",
+      "type": {
+        "type": "long",
+        "logicalType": "timestamp-millis"
+      },
+      "doc": "Время получения события сборщиком в UTC, миллисекунды от эпохи."
+    },
+    {
+      "name": "source",
+      "type": "string",
+      "doc": "Ось источника данных; для варианта 27 значение sensors."
+    },
+    {
+      "name": "sensor_id",
+      "type": "long",
+      "doc": "Идентификатор датчика в источнике."
+    },
+    {
+      "name": "sensor_type",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null,
+      "doc": "Тип датчика, например SDS011 или DHT22."
+    },
+    {
+      "name": "pin",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null,
+      "doc": "Пин на плате; в архивных CSV отсутствует."
+    },
+    {
+      "name": "location_id",
+      "type": [
+        "null",
+        "long"
+      ],
+      "default": null,
+      "doc": "Идентификатор места установки датчика."
+    },
+    {
+      "name": "latitude",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null,
+      "doc": "Широта в виде строки, как её отдаёт источник."
+    },
+    {
+      "name": "longitude",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null,
+      "doc": "Долгота в виде строки, как её отдаёт источник."
+    },
+    {
+      "name": "altitude",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null,
+      "doc": "Высота в виде строки; в архивных CSV отсутствует."
+    },
+    {
+      "name": "country",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null,
+      "doc": "Код страны датчика: PL, CZ или AT."
+    },
+    {
+      "name": "indoor",
+      "type": [
+        "null",
+        "int"
+      ],
+      "default": null,
+      "doc": "1 — датчик в помещении, 0 — на улице; в архивных CSV отсутствует."
+    },
+    {
+      "name": "values",
+      "type": {
+        "type": "map",
+        "values": "string"
+      },
+      "doc": "Измеренные величины: тип величины в источнике → значение строкой. Сырой слой не приводит типы."
+    }
+  ]
+}
