@@ -25,3 +25,22 @@
 Служба на стенде запущена: Ubuntu в WSL2, клон `~/stand`, `docker compose --profile lab1 up -d`. Поток пишется с 2026-10-22T19:48Z. Исторический срез — сутки 2026-10-21, 1 893 файла. Счётчики отдаёт `prometheus_client` на порту 9101, путь `/metrics`. Базовые: `collector_events_total`, `collector_errors_total` (kind=http|network|parse), `collector_last_success_timestamp_seconds` (после успешной обработки ответа). Дополнительно: `collector_up`, `collector_metrics_server_up`, `collector_requests_total`, `collector_request_duration_seconds`, `collector_records_processed_total`, `collector_last_poll_timestamp_seconds`, `collector_backfill_completed_total`. HTTP 404 архива в `errors_total` не входит.
 
 Для дополнительного балла: рост `collector_errors_total` при отключении сети на минуту во время опроса. Точка восстановления и недельная копия `raw` делаются после защиты и проверяются на работе 3.
+
+## ЛР2
+
+Схема события — Avro, `schemas/event.avsc`. Версия 1 — коммит `e49dda0`, версия 2 — коммит `12038ef`. В v1 обязательные `event_key` и `event_time` (`long`, `timestamp-millis`), поля паспорта и `values` — `map<string>`; `measurement_id` не хранится. В v2 добавлен `measurement_id` (`["null","long"]`, `default: null`). В `.env` задано `SERDE=avro`.
+
+Проверка `schemas/check.py` на часе 2026-11-10T16:00Z (18 файлов, 22 829 событий): JSON 9 207 042 байта, Avro v2 3 538 750 байтов, ошибок кодирования 0. Совместимость: v1→v2 — 22 829 событий, 3 378 947 байтов, 0 ошибок; v2→v1 — 22 829 событий, 3 538 750 байтов, 0 ошибок. Совместимость полная: v2 читает v1 за счёт `default`, v1 игнорирует лишнее поле v2.
+
+DuckDB по сырому JSON вывел `event_time` и `received_at` как `TIMESTAMP WITH TIME ZONE`, `values` как `STRUCT` с объединением ключей, `indoor` как `BIGINT`. В схеме Avro время — `long` `timestamp-millis`, `values` — `map<string>`, `indoor` — `int`. В `jobs/to_parquet.sql` типы заданы явно: `TIMESTAMP`, `MAP(VARCHAR, VARCHAR)`, `INTEGER`. Повторов по `event_key` в Parquet-наборе нет: 12 665 966 строк и столько же различных ключей.
+
+`jobs/to_parquet.sql`: 21 партиция `event_date=...`, 12 665 966 строк, 417 457 386 байтов после повторного запуска (первый — 417 941 031 байт; число файлов и строк не изменилось, копий нет). Запрос `jobs/to_parquet_v2.sql` перезаписал только `event_date=2026-11-10`: 184 270 строк, у всех есть `measurement_id`; в старых партициях поле пустое. Чтение всего набора с `union_by_name = true` — 12 665 966 строк; `count(measurement_id)` в старых партициях 0. Объём набора после v2 — 418 196 182 байта.
+
+Замер запроса «число событий по часам и странам» за 2026-10-23 (три запуска, `.timer on`, медиана):
+
+- сырые файлы: 3,101 с; каталог 40 230 902 байта;
+- Parquet: 0,010 с; партиция 32 419 585 байтов.
+
+Результат совпадает: 72 строки (24 часа × 3 страны). Сырьё партиционировано по `received_at`, поэтому запрос по `event_time` сканирует весь слой; Parquet-партиция по `event_date` читает только свои файлы. В сутках 2026-10-23 от 29 333 до 43 867 событий в час, в среднем 40 086,8.
+
+Каталог данных дополнен набором `parquet.events`.
