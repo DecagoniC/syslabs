@@ -1,4 +1,4 @@
-# Разбор `1_lab/collector/src/main.py`
+# Разбор `collector/src/main.py`
 
 Файл — программа сборщика sensor.community для варианта 27. Точка входа одна: оболочка стенда запускает `python /app/src/main.py record` или `python /app/src/main.py backfill`. Ниже идёт файл сверху вниз, строка за строкой. Пустые строки только отделяют блоки и сами ничего не делают.
 
@@ -6,7 +6,7 @@
 
 ## 1–5. Назначение файла
 
-```1:5:1_lab/collector/src/main.py
+```1:5:collector/src/main.py
 """Сборщик sensor.community: поток стран задания и архив за сутки.
 
 Режим record пишет живой опрос в слой потока, backfill — архивные CSV

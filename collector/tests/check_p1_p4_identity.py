@@ -1,7 +1,5 @@
 """Проверка эквивалентности P1–P4: кеш slugs и одинаковый payload gzip."""
 
-from __future__ import annotations
-
 import gzip
 import sys
 import tempfile

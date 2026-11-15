@@ -31,7 +31,8 @@ COPY (
         values,
         CAST(event_time AS DATE) AS event_date
     FROM read_json_auto(
-        ['/data/raw/*/dt=' || getvariable('day') || '/**/*.jsonl.gz'],
+        ['/data/raw/*/dt=' || getvariable('day') || '/**/*.jsonl.gz',
+         '/data/raw/*/dt=' || (getvariable('day') + 1) || '/**/*.jsonl.gz'],
         columns = {
             event_key: 'VARCHAR',
             event_time: 'TIMESTAMP',
@@ -51,5 +52,6 @@ COPY (
         },
         hive_partitioning = false
     )
+    WHERE CAST(event_time AS DATE) = getvariable('day')
 ) TO '/data/duckdb/parquet/events'
 (FORMAT PARQUET, PARTITION_BY (event_date), OVERWRITE_OR_IGNORE true);

@@ -1,7 +1,5 @@
 """Characterization tests: фиксируют текущую семантику коллектора."""
 
-from __future__ import annotations
-
 import gzip
 import json
 import sys

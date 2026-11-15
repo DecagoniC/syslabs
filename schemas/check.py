@@ -1,12 +1,3 @@
-"""Проверка схемы Avro на событиях одного часа сырого слоя.
-
-Читает JSON Lines из data/raw/stream/dt=.../hour=..., кодирует каждое
-событие схемой Avro через fastavro и читает обратно. Печатает размер часа
-в JSON и в двоичной кодировке, а также события, которые не прошли схему.
-"""
-
-from __future__ import annotations
-
 import argparse
 import gzip
 import io
@@ -15,14 +6,10 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-try:
-    import fastavro
-except ImportError:
-    sys.exit("нужен пакет fastavro: python -m pip install fastavro")
+import fastavro
 
 
 def parse_millis(value: object) -> int | None:
-    """Переводит ISO-8601 источника в миллисекунды UTC."""
     if not isinstance(value, str) or not value.strip():
         return None
     text = value.strip().replace("Z", "+00:00")
@@ -39,8 +26,38 @@ def load_schema(path: Path) -> dict:
         return json.load(handle)
 
 
+def encode_event(schema: dict, record: dict) -> bytes:
+    """Кодирует одну запись в Avro-бинарник по схеме.
+
+    schema — схема Avro из .avsc: имена полей, типы, default.
+    record — словарь с данными одного события под эту схему.
+    Возвращает bytes — двоичное представление события.
+    """
+    buffer = io.BytesIO()
+    fastavro.schemaless_writer(buffer, schema, record)
+    return buffer.getvalue()
+
+
+def decode_event(
+    binary: bytes,
+    writer_schema: dict,
+    reader_schema: dict | None = None,
+) -> dict:
+    """Читает Avro-бинарник и возвращает запись.
+
+    binary — байты, которые вернул encode_event.
+    writer_schema — схема, которой данные кодировали; по ней разбираются байты.
+    reader_schema — схема, которой данные хотим прочитать; если None, берётся writer_schema.
+    Разные writer/reader позволяют проверить совместимость версий схемы.
+    """
+    return fastavro.schemaless_reader(
+        io.BytesIO(binary),
+        writer_schema,
+        reader_schema,
+    )
+
+
 def full_record(event: dict) -> dict:
-    """Собирает запись со всеми полями схемы; лишние поля отбросит record_for_schema."""
     value_map = event.get("values")
     values = value_map if isinstance(value_map, dict) else {}
     return {
@@ -116,10 +133,8 @@ def main() -> int:
                     if not isinstance(event, dict):
                         raise ValueError("событие не объект JSON")
                     record = record_for_schema(full_record(event), write_schema)
-                    buffer = io.BytesIO()
-                    fastavro.schemaless_writer(buffer, write_schema, record)
-                    binary = buffer.getvalue()
-                    fastavro.schemaless_reader(io.BytesIO(binary), write_schema, read_schema)
+                    binary = encode_event(write_schema, record)
+                    decode_event(binary, write_schema, read_schema)
                     avro_bytes += len(binary)
                 except Exception as exc:
                     failures += 1

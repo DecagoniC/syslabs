@@ -1,7 +1,5 @@
 """Микробенч горячих путей. Запуск: python -m tests.bench_hotpaths"""
 
-from __future__ import annotations
-
 import gzip
 import json
 import statistics
