@@ -1,5 +1,3 @@
-
-
 import os
 import shutil
 import time
@@ -67,7 +65,7 @@ for codec in CODECS:
             FROM read_parquet('{file_path}')
             GROUP BY 1, 2 ORDER BY 1, 2
         """
-        con.sql(query_sql).fetchall()  # прогрев, в медиану не входит
+        con.sql(query_sql).fetchall()
 
         times = []
         for _ in range(3):

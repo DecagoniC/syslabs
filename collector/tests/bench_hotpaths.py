@@ -1,5 +1,3 @@
-"""Микробенч горячих путей. Запуск: python -m tests.bench_hotpaths"""
-
 import gzip
 import json
 import statistics
@@ -13,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1] / "src"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import main as collector  # noqa: E402
+import main as collector
 
 
 def make_item(i: int) -> dict:

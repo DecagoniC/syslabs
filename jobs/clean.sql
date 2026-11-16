@@ -1,16 +1,10 @@
 SET VARIABLE day = coalesce(getvariable('day'), DATE '2026-11-14');
 
--- ЛР3: очистка суток D из сырья в озере.
--- Запуск из ~/stand:
---   docker compose run --rm -T duckdb -init init.sql < jobs/clean.sql
--- Читаем сырьё D и D+1 (поток и историю), пишем только партицию event_date = D.
-
 SET TimeZone = 'UTC';
 SET memory_limit = '2GB';
 SET threads = 2;
 SET preserve_insertion_order = false;
 
--- Допустимые границы основных физических величин.
 CREATE OR REPLACE MACRO valid_value(k, v) AS
     CASE
         WHEN k IN ('P0', 'P1', 'P2', 'P4', 'P05', 'P10', 'P25',

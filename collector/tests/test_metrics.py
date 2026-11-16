@@ -1,5 +1,3 @@
-"""Unit-тесты Prometheus-интеграции сборщика. Без обращения к sensor.community."""
-
 import csv
 import io
 import json
@@ -20,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1] / "src"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import main as collector  # noqa: E402
+import main as collector
 
 
 def sample_cfg(**overrides) -> collector.Config:
@@ -64,7 +62,6 @@ def counter_value(registry: CollectorRegistry, name: str, labels: dict | None = 
                 continue
             if sample.name in {name, name + "_total"} or sample.name == name:
                 value = float(sample.value)
-    # Prefer exact sample name match
     for metric in registry.collect():
         for sample in metric.samples:
             if sample.name != name:
@@ -342,7 +339,6 @@ class MetricsUnitTests(unittest.TestCase):
             def action_fail(response):
                 raise csv.Error("bad csv")
 
-            # Force call_with_retries path via load_sensor_file internals: patch read by making open_once ok then fail in Text path
             with mock.patch.object(collector, "call_with_retries", side_effect=csv.Error("bad csv")):
                 status = collector.load_sensor_file(cfg, datetime(2026, 10, 21).date(), "10", "SDS011", "PL")
             self.assertEqual(status, "stop")

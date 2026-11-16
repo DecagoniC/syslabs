@@ -1,11 +1,4 @@
 #!/usr/bin/env python3
-"""ЛР3: удаление из озера партиций старше срока хранения.
-
-Пример запуска из ~/stand:
-  docker compose run --rm -T --entrypoint python \
-      -v "$PWD/jobs:/jobs:ro" collector /jobs/retention.py \
-      --layer clean --days 2 --dry-run
-"""
 
 import argparse
 import os
@@ -14,7 +7,6 @@ from datetime import date, datetime, timedelta, timezone
 import boto3
 from botocore.config import Config
 
-# слой: (префикс, метка партиции, срок по умолчанию)
 LAYERS = {
     "raw": ("raw/", "/dt=", 56),
     "clean": ("clean/", "/event_date=", 90),
@@ -29,7 +21,6 @@ def env(name: str) -> str:
 
 
 def partition_date(key: str, marker: str) -> date | None:
-    """Достаёт дату из ключа .../dt=2026-11-01/... или .../event_date=..."""
     if marker not in key:
         return None
     text = key.split(marker, 1)[1][:10]

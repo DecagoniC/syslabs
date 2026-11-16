@@ -1,16 +1,4 @@
--- ЛР2, версия 1 схемы: весь сырой слой (поток и исторический срез) в Parquet.
--- Запуск на стенде:
---   mkdir -p data/duckdb/parquet
---   docker compose run --rm -T duckdb < jobs/to_parquet.sql
---
--- Пути внутри контейнера: сырьё смонтировано в /data/raw только на чтение,
--- рабочий каталог DuckDB — /data/duckdb.
--- Версия 1 не хранит measurement_id: поле появится в версии 2 схемы.
-
 SET TimeZone = 'UTC';
-SET memory_limit = '2GB';
-SET threads = 2;
-SET preserve_insertion_order = false;
 
 COPY (
     SELECT

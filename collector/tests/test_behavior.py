@@ -1,5 +1,3 @@
-"""Characterization tests: фиксируют текущую семантику коллектора."""
-
 import gzip
 import json
 import sys
@@ -13,8 +11,8 @@ ROOT = Path(__file__).resolve().parents[1] / "src"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import main as collector  # noqa: E402
-from test_metrics import FakeResponse, reset_module_metrics, sample_cfg  # noqa: E402
+import main as collector
+from test_metrics import FakeResponse, reset_module_metrics, sample_cfg
 
 
 def api_item(**overrides):
@@ -194,7 +192,6 @@ class FakePaginator:
 
 
 class FakeLake:
-    """Минимальный клиент S3: листинг, HEAD и запись ключей в память."""
 
     def __init__(self, existing: set[str] | None = None) -> None:
         self.existing = set(existing or ())

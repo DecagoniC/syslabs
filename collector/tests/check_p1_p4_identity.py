@@ -1,5 +1,3 @@
-"""Проверка эквивалентности P1–P4: кеш slugs и одинаковый payload gzip."""
-
 import gzip
 import sys
 import tempfile
@@ -10,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1] / "src"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import main as c  # noqa: E402
+import main as c
 
 
 def main() -> None:

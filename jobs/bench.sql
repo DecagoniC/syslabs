@@ -1,10 +1,3 @@
--- ЛР2: замер одного и того же запроса на сырых файлах и на Parquet.
--- Сутки события — 2026-10-23. Сырьё партиционировано по received_at, поэтому
--- сырой запрос сканирует весь слой и фильтрует по event_time; Parquet читает
--- одну партицию event_date=2026-10-23.
--- Запуск: docker compose run --rm -T duckdb < jobs/bench.sql
--- Время печатает .timer on; в NOTES.md идёт медиана трёх запусков.
-
 .timer on
 
 SELECT date_trunc('hour', event_time) AS hour, country, count(*) AS events

@@ -1,11 +1,3 @@
--- ЛР2, версия 2 схемы: запись только новых суток в Parquet, с measurement_id.
--- Старые партиции остаются без этого поля, а весь набор читается с union_by_name = true.
--- Запуск на стенде (день задан в первой строке, его можно переопределить снаружи):
---   docker compose run --rm -T duckdb < jobs/to_parquet_v2.sql
---
--- Версия 2 добавляет measurement_id как optional-поле с default null.
--- Шаблон пути raw/*/dt=.../** берёт и поток, и исторический срез за сутки.
-
 SET TimeZone = 'UTC';
 SET memory_limit = '2GB';
 SET threads = 2;

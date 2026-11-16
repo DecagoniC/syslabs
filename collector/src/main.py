@@ -1,9 +1,3 @@
-"""Сборщик sensor.community: поток стран задания и архив за сутки.
-
-Режим record пишет живой опрос в слой потока, backfill — архивные CSV
-датчиков, которые поток отдаёт для этих стран. produce и replay — работа 6.
-"""
-
 import codecs
 import csv
 import gzip
@@ -76,7 +70,6 @@ class Config:
 
 
 class Metrics:
-    """Метрики сборщика на prometheus_client. Labels только mode/status/kind."""
 
     def __init__(self, mode: str, registry: CollectorRegistry | None = None) -> None:
         reg = REGISTRY if registry is None else registry
@@ -279,7 +272,6 @@ def install_signals() -> None:
 
 
 def sleep_for(seconds: float) -> bool:
-    """Ждёт seconds. False — пришёл сигнал остановки."""
     return not _stop.wait(seconds)
 
 
@@ -377,7 +369,6 @@ def event_from_api(
     countries: frozenset[str],
     received_at_text: str | None = None,
 ) -> dict[str, object] | bool | None:
-    # False — битая запись (нет sensor_id/timestamp); None — отброшена фильтром страны.
     location = as_dict(item.get("location"))
     country = country_of(location)
     if countries and country not in countries:
@@ -598,18 +589,14 @@ def file_sort_key(path: Path) -> tuple[str, str, str]:
     return (day or "9999-99-99", hour or "", path.name)
 
 
-# --- ЛР3: копия закрытых файлов в озеро -------------------------------------
-
 _lake_client = None
 
 
 def lake_key(cfg: Config, path: Path) -> str:
-    """Ключ в озере повторяет путь файла на диске."""
     return f"{cfg.lake_prefix}/{path.relative_to(cfg.raw_dir).as_posix()}"
 
 
 def lake_client(cfg: Config):
-    """Один клиент S3 на процесс; создаётся только при включённом копировании."""
     global _lake_client
     if _lake_client is None:
         import boto3
@@ -631,7 +618,6 @@ def lake_client(cfg: Config):
 
 
 def upload_closed(cfg: Config, path: Path) -> None:
-    """Копирует закрытый файл в озеро. Если объект уже есть — пропускает."""
     if not cfg.lake_prefix:
         return
     from botocore.exceptions import ClientError
@@ -652,7 +638,6 @@ def upload_closed(cfg: Config, path: Path) -> None:
 
 
 def sync_lake(cfg: Config) -> None:
-    """Докопирует накопленное до старта: один листинг, затем загрузка."""
     if not cfg.lake_prefix:
         return
     try:
@@ -718,7 +703,6 @@ def enforce_limit(raw_dir: Path, limit_bytes: int) -> None:
 
 
 def iter_json_array(chunks):
-    """Читает JSON-массив объектами, не собирая ответ целиком."""
     decoder = codecs.getincrementaldecoder("utf-8-sig")()
     parser = json.JSONDecoder()
     buf = ""
@@ -790,7 +774,6 @@ def retryable(exc: BaseException) -> bool:
 
 
 def classify_failure(exc: BaseException) -> tuple[str, str]:
-    """Возвращает (request_status, error_kind)."""
     if isinstance(exc, urllib.error.HTTPError):
         return "http_error", "http"
     if isinstance(exc, (json.JSONDecodeError, ValueError, csv.Error, UnicodeError, gzip.BadGzipFile)):
@@ -855,7 +838,6 @@ def call_with_retries(cfg: Config, url: str, action):
 
 
 def start_metrics(cfg: Config, registry: CollectorRegistry | None = None) -> Metrics:
-    """Создаёт метрики и поднимает HTTP /metrics. Сбор данных не падает при ошибке порта."""
     global _metrics, _metrics_httpd, _metrics_thread, _metrics_server_started
     if _metrics is not None and _metrics_server_started:
         log("warn", "metrics", reason="already_started", port=cfg.metrics_port)
@@ -878,7 +860,6 @@ def start_metrics(cfg: Config, registry: CollectorRegistry | None = None) -> Met
 
 
 def stop_metrics() -> None:
-    """Гасит collector_up и останавливает HTTP-сервер метрик."""
     global _metrics_httpd, _metrics_thread, _metrics_server_started
     if _metrics is not None:
         _metrics.set_up(0)
@@ -1124,7 +1105,6 @@ def load_sensor_file(
     country: str,
     indoor: str = "0",
 ) -> str:
-    """Пишет файл датчика. Возвращает ok, miss или stop."""
     received_at = datetime.now(timezone.utc)
     received_at_text = format_time(received_at)
     writers: dict[str, PartWriter] = {}

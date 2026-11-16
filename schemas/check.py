@@ -27,12 +27,6 @@ def load_schema(path: Path) -> dict:
 
 
 def encode_event(schema: dict, record: dict) -> bytes:
-    """Кодирует одну запись в Avro-бинарник по схеме.
-
-    schema — схема Avro из .avsc: имена полей, типы, default.
-    record — словарь с данными одного события под эту схему.
-    Возвращает bytes — двоичное представление события.
-    """
     buffer = io.BytesIO()
     fastavro.schemaless_writer(buffer, schema, record)
     return buffer.getvalue()
@@ -43,13 +37,6 @@ def decode_event(
     writer_schema: dict,
     reader_schema: dict | None = None,
 ) -> dict:
-    """Читает Avro-бинарник и возвращает запись.
-
-    binary — байты, которые вернул encode_event.
-    writer_schema — схема, которой данные кодировали; по ней разбираются байты.
-    reader_schema — схема, которой данные хотим прочитать; если None, берётся writer_schema.
-    Разные writer/reader позволяют проверить совместимость версий схемы.
-    """
     return fastavro.schemaless_reader(
         io.BytesIO(binary),
         writer_schema,
