@@ -28,10 +28,11 @@
 1. **Garage работает, в bucket `lake` есть слои сырья и очистки.**
    `docker compose ps -a` — `collector`/`s3` Up, `s3-init` Exited (0).
    `docker compose exec s3 /garage bucket info lake` — bucket `lake`, число объектов и размер.
+   `docker compose run --rm -T duckdb -init init.sql -c "SELECT regexp_extract(file,'^s3://lake/([^/]+/[^/]+)/',1) AS layer, count(*) AS files FROM glob('s3://lake/**') GROUP BY 1 ORDER BY 1;"` — слои по префиксам: `clean/events` 25, `raw/history` 1893, `raw/stream` около 9,6 тыс.
 
 2. **Соглашение ключей и партиций в `CATALOG.md`; листинг ему соответствует.**
    `sed -n '1,90p' CATALOG.md` — слои, шаблон ключа, имена партиций, сроки и объяснение через свойства S3.
-   `docker compose run --rm -T duckdb -init init.sql -c "SELECT regexp_extract(file,'^s3://lake/([^/]+/[^/]+)/',1) AS layer, count(*) AS files FROM glob('s3://lake/**') GROUP BY 1 ORDER BY 1;"` — `clean/events` 25, `raw/history` 1893, `raw/stream` около 9,6 тыс. — ровно по шаблону.
+   Листинг из пункта 1 даёт ровно эти префиксы и партиции: `raw/stream/dt=…/hour=…`, `raw/history/dt=…`, `clean/events/event_date=…`.
 
 3. **Очистка отделена от сбора: `clean.sql` пишет только D, правила записаны, повтор без копий.**
    `cat jobs/clean.sql` — чтение D и D+1, дедупликация, отбрасывание мусора и выбросов, запись только партиции D.
