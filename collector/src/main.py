@@ -67,6 +67,12 @@ class Config:
     timeout: int
     retries: int
     once: bool
+    lake_prefix: str = ""
+    s3_endpoint: str = ""
+    s3_region: str = ""
+    s3_access_key: str = ""
+    s3_secret_key: str = ""
+    s3_bucket: str = ""
 
 
 class Metrics:
@@ -225,6 +231,16 @@ def load_config(mode: str) -> Config:
         log("warn", "config", name="COLLECTOR_POLL_SECONDS", using=300)
         poll = 300
     limit_gb = float(os.environ.get("COLLECTOR_RAW_LIMIT_GB", "20") or "20")
+    lake_prefix = os.environ.get("COLLECTOR_LAKE_PREFIX", "").strip().strip("/")
+    lake: dict[str, str] = {}
+    if lake_prefix:
+        lake = {
+            "s3_endpoint": require_env("S3_ENDPOINT").rstrip("/"),
+            "s3_region": require_env("S3_REGION"),
+            "s3_access_key": require_env("S3_ACCESS_KEY"),
+            "s3_secret_key": require_env("S3_SECRET_KEY"),
+            "s3_bucket": require_env("S3_BUCKET"),
+        }
     return Config(
         mode=mode,
         source=source,
@@ -245,6 +261,8 @@ def load_config(mode: str) -> Config:
         timeout=env_int("COLLECTOR_HTTP_TIMEOUT", 120),
         retries=env_int("COLLECTOR_RETRY_ATTEMPTS", 5),
         once=once,
+        lake_prefix=lake_prefix,
+        **lake,
     )
 
 
@@ -490,6 +508,7 @@ def commit_part(writer: PartWriter, cfg: Config) -> Path:
     if _metrics is not None:
         _metrics.add_events(writer.lines)
     log("info", "closed", lines=writer.lines, file=str(path.relative_to(cfg.raw_dir)))
+    upload_closed(cfg, path)
     return path
 
 
@@ -577,6 +596,85 @@ def closed_files(raw_dir: Path) -> list[Path]:
 def file_sort_key(path: Path) -> tuple[str, str, str]:
     day, hour = partition_parts(path)
     return (day or "9999-99-99", hour or "", path.name)
+
+
+# --- ЛР3: копия закрытых файлов в озеро -------------------------------------
+
+_lake_client = None
+
+
+def lake_key(cfg: Config, path: Path) -> str:
+    """Ключ в озере повторяет путь файла на диске."""
+    return f"{cfg.lake_prefix}/{path.relative_to(cfg.raw_dir).as_posix()}"
+
+
+def lake_client(cfg: Config):
+    """Один клиент S3 на процесс; создаётся только при включённом копировании."""
+    global _lake_client
+    if _lake_client is None:
+        import boto3
+        from botocore.config import Config as BotoConfig
+
+        _lake_client = boto3.client(
+            "s3",
+            endpoint_url=cfg.s3_endpoint,
+            region_name=cfg.s3_region,
+            aws_access_key_id=cfg.s3_access_key,
+            aws_secret_access_key=cfg.s3_secret_key,
+            config=BotoConfig(
+                s3={"addressing_style": "path"},
+                request_checksum_calculation="when_required",
+                response_checksum_validation="when_required",
+            ),
+        )
+    return _lake_client
+
+
+def upload_closed(cfg: Config, path: Path) -> None:
+    """Копирует закрытый файл в озеро. Если объект уже есть — пропускает."""
+    if not cfg.lake_prefix:
+        return
+    from botocore.exceptions import ClientError
+
+    key = lake_key(cfg, path)
+    try:
+        s3 = lake_client(cfg)
+        try:
+            s3.head_object(Bucket=cfg.s3_bucket, Key=key)
+            return
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] not in ("404", "NoSuchKey"):
+                raise
+        s3.upload_file(str(path), cfg.s3_bucket, key)
+        log("info", "lake_upload", key=key, bytes=path.stat().st_size)
+    except Exception as exc:
+        log("error", "lake", key=key, error=str(exc))
+
+
+def sync_lake(cfg: Config) -> None:
+    """Докопирует накопленное до старта: один листинг, затем загрузка."""
+    if not cfg.lake_prefix:
+        return
+    try:
+        s3 = lake_client(cfg)
+        existing = set()
+        for page in s3.get_paginator("list_objects_v2").paginate(
+            Bucket=cfg.s3_bucket, Prefix=cfg.lake_prefix + "/"
+        ):
+            existing.update(item["Key"] for item in page.get("Contents", []))
+        uploaded = skipped = uploaded_bytes = 0
+        for path in closed_files(cfg.raw_dir):
+            key = lake_key(cfg, path)
+            if key in existing:
+                skipped += 1
+                continue
+            s3.upload_file(str(path), cfg.s3_bucket, key)
+            uploaded += 1
+            uploaded_bytes += path.stat().st_size
+        log("info", "lake_sync", uploaded=uploaded, skipped=skipped,
+            errors=0, bytes=uploaded_bytes)
+    except Exception as exc:
+        log("error", "lake_sync", error=str(exc))
 
 
 def enforce_limit(raw_dir: Path, limit_bytes: int) -> None:
@@ -908,6 +1006,7 @@ def record_loop(cfg: Config) -> None:
     seen = scan_recent_keys(cfg.out_dir, now, cfg.dedup_seconds)
     state = load_json(state_path)
     log("info", "start", mode=cfg.mode, seen=len(seen))
+    sync_lake(cfg)
     while not _stop.is_set():
         now = datetime.now(timezone.utc)
         last_text = state.get("last_poll_at")
@@ -1133,6 +1232,7 @@ def backfill(cfg: Config) -> None:
     atomic_write(state_path, json.dumps(state))
     log("info", "discover", sensors=len(sensors))
     drop_partials(cfg.out_dir)
+    sync_lake(cfg)
     finished = 0
     for day in days:
         for sensor_id in sorted(sensors, key=lambda item: int(item)):

@@ -3,6 +3,7 @@
 import csv
 import io
 import json
+import os
 import socket
 import sys
 import tempfile
@@ -167,6 +168,8 @@ class MetricsUnitTests(unittest.TestCase):
         self.assertEqual(gauge_value(self.registry, "collector_metrics_server_up"), 0.0)
 
     def test_start_metrics_port_busy(self) -> None:
+        if os.name == "nt":
+            self.skipTest("Windows разрешает вторую привязку при SO_REUSEADDR")
         holder = socket.socket()
         holder.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         holder.bind(("127.0.0.1", 0))

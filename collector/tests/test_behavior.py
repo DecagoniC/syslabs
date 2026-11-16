@@ -185,5 +185,83 @@ class BehaviorTests(unittest.TestCase):
             self.assertIsNone(row["measurement_id"])
 
 
+class FakePaginator:
+    def __init__(self, lake: "FakeLake") -> None:
+        self.lake = lake
+
+    def paginate(self, **_kwargs):
+        yield {"Contents": [{"Key": key} for key in sorted(self.lake.existing)]}
+
+
+class FakeLake:
+    """Минимальный клиент S3: листинг, HEAD и запись ключей в память."""
+
+    def __init__(self, existing: set[str] | None = None) -> None:
+        self.existing = set(existing or ())
+        self.uploads: list[str] = []
+
+    def get_paginator(self, _name: str):
+        return FakePaginator(self)
+
+    def head_object(self, Bucket: str, Key: str):
+        if Key not in self.existing:
+            raise AssertionError(f"unexpected HEAD for missing key {Key}")
+        return {}
+
+    def upload_file(self, source: str, bucket: str, key: str) -> None:
+        self.uploads.append(key)
+        self.existing.add(key)
+
+
+class LakeTests(unittest.TestCase):
+    def tearDown(self) -> None:
+        collector._lake_client = None
+
+    def test_lake_key_repeats_disk_layout(self) -> None:
+        cfg = sample_cfg(raw_dir=Path("/data/raw"), lake_prefix="raw")
+        path = Path("/data/raw/stream/dt=2026-11-10/hour=12/part-1-PL.jsonl.gz")
+        self.assertEqual(
+            collector.lake_key(cfg, path),
+            "raw/stream/dt=2026-11-10/hour=12/part-1-PL.jsonl.gz",
+        )
+
+    def test_sync_lake_skips_existing_and_uploads_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            stream = root / "stream/dt=2026-11-10/hour=12/part-1-PL.jsonl.gz"
+            history = root / "history/dt=2026-11-09/sensor-7.jsonl.gz"
+            for path in (stream, history):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"x")
+            existing = {"raw/" + stream.relative_to(root).as_posix()}
+            lake = FakeLake(existing)
+            cfg = sample_cfg(raw_dir=root, lake_prefix="raw")
+            with mock.patch.object(collector, "lake_client", return_value=lake):
+                collector.sync_lake(cfg)
+            self.assertEqual(
+                lake.uploads,
+                ["raw/" + history.relative_to(root).as_posix()],
+            )
+
+    def test_upload_closed_does_not_rewrite_existing_object(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "stream/dt=2026-11-10/hour=12/part-1-PL.jsonl.gz"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"x")
+            key = "raw/" + path.relative_to(root).as_posix()
+            lake = FakeLake({key})
+            cfg = sample_cfg(raw_dir=root, lake_prefix="raw")
+            with mock.patch.object(collector, "lake_client", return_value=lake):
+                collector.upload_closed(cfg, path)
+            self.assertEqual(lake.uploads, [])
+
+    def test_upload_disabled_without_prefix(self) -> None:
+        cfg = sample_cfg(raw_dir=Path("/data/raw"), lake_prefix="")
+        with mock.patch.object(collector, "lake_client") as client:
+            collector.upload_closed(cfg, Path("/data/raw/stream/x.jsonl.gz"))
+        client.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
